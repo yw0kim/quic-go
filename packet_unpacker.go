@@ -69,8 +69,11 @@ func (u *packetUnpacker) Unpack(hdr *wire.Header, data []byte) (*unpackedPacket,
 		data[hdrLen:hdrLen+4],
 	)
 	// 3. parse the header (and learn the actual length of the packet number)
-	extHdr, err := hdr.ParseExtended(r, u.version)
-	if err != nil {
+	extHdr, parseErr := hdr.ParseExtended(r, u.version)
+	// If the reserved bits are set incorrectly, we still need to continue unpacking.
+	// This avoids a timing side-channel, which otherwise might allow an attacker
+	// to gain information about the header encryption
+	if parseErr != nil && parseErr != wire.ErrInvalidReservedBits {
 		return nil, fmt.Errorf("error parsing extended header: %s", err)
 	}
 	extHdrLen := hdrLen + int(extHdr.PacketNumberLen)
@@ -88,6 +91,9 @@ func (u *packetUnpacker) Unpack(hdr *wire.Header, data []byte) (*unpackedPacket,
 	decrypted, err := opener.Open(data[extHdrLen:extHdrLen], data[extHdrLen:], pn, data[:extHdrLen])
 	if err != nil {
 		return nil, err
+	}
+	if parseErr == wire.ErrInvalidReservedBits {
+		return nil, parseErr
 	}
 
 	// Only do this after decrypting, so we are sure the packet is not attacker-controlled

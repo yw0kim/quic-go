@@ -106,6 +106,22 @@ var _ = Describe("Packet Unpacker", func() {
 		Expect(err).To(MatchError("test err"))
 	})
 
+	It("defends against the timing side-channel when the reserved bits are wrong", func() {
+		extHdr := &wire.ExtendedHeader{
+			Header:          wire.Header{DestConnectionID: connID},
+			PacketNumber:    0x1337,
+			PacketNumberLen: 2,
+		}
+		hdr, hdrRaw := getHeader(extHdr)
+		hdrRaw[0] |= 0x18
+		opener := mocks.NewMockOpener(mockCtrl)
+		opener.EXPECT().DecryptHeader(gomock.Any(), gomock.Any(), gomock.Any())
+		cs.EXPECT().GetOpener(protocol.Encryption1RTT).Return(opener, nil)
+		opener.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return([]byte("payload"), nil)
+		_, err := unpacker.Unpack(hdr, append(hdrRaw, payload...))
+		Expect(err).To(MatchError(wire.ErrInvalidReservedBits))
+	})
+
 	It("decrypts the header", func() {
 		extHdr := &wire.ExtendedHeader{
 			Header: wire.Header{
