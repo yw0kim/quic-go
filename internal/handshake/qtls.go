@@ -38,7 +38,7 @@ func tlsConfigToQtlsConfig(c *tls.Config) *qtls.Config {
 		InsecureSkipVerify:          c.InsecureSkipVerify,
 		CipherSuites:                c.CipherSuites,
 		PreferServerCipherSuites:    c.PreferServerCipherSuites,
-		SessionTicketsDisabled:      c.SessionTicketsDisabled,
+		SessionTicketsDisabled:      true,
 		SessionTicketKey:            c.SessionTicketKey,
 		MinVersion:                  minVersion,
 		MaxVersion:                  maxVersion,
