@@ -11,11 +11,10 @@ import (
 	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
 	"github.com/lucas-clemente/quic-go/internal/utils"
-	"golang.org/x/net/http2"
 )
 
-func getRoundTripper(proto string) (http.RoundTripper, http2.RoundTripper, h2quic.RoundTripper) {
-	var roundTripper http.RoundTripper
+func getHTTPClient(proto string) *http.Client {
+	var hclient http.Client
 
 	switch proto {
 	case "http/1":
@@ -26,9 +25,12 @@ func getRoundTripper(proto string) (http.RoundTripper, http2.RoundTripper, h2qui
 				RootCAs: testdata.GetRootCA(),
 			},
 		}
+		hclient = http.Client{
+			Transport: roundTripper,
+		}
 	}
 
-	return roundTripper
+	return &hclient
 }
 
 func main() {
@@ -58,14 +60,7 @@ func main() {
 		return
 	}
 
-	roundTripper := getRoundTripper(*proto)
-	if *proto == "http/2" {
-		defer roundTripper.Close()
-	}
-
-	hclient := &http.Client{
-		Transport: roundTripper,
-	}
+	hclient := getHTTPClient(*proto)
 
 	var wg sync.WaitGroup
 	wg.Add(len(urls))
