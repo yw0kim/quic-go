@@ -100,9 +100,11 @@ func init() {
 
 func main() {
 	// defer profile.Start().Stop()
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
+
+	go func() { // http/1 server
+		log.Println("Call http.ListenAndServe", http.ListenAndServe("localhost:6060", nil))
 	}()
+
 	// runtime.SetBlockProfileRate(1)
 
 	verbose := flag.Bool("v", false, "verbose")
@@ -124,7 +126,7 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir(*www)))
 
 	if len(bs) == 0 {
-		bs = binds{"localhost:6121"}
+		bs = binds{"localhost:6212"}
 	}
 
 	var wg sync.WaitGroup
