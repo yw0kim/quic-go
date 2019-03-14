@@ -4,25 +4,26 @@ import (
 	"bytes"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
 
 	"github.com/lucas-clemente/quic-go/h2quic"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 	"github.com/lucas-clemente/quic-go/internal/utils"
+	"github.com/lucas-clemente/quic-go/yw0kim_example/tlsdata"
 )
 
 func getHTTPClient(proto string) *http.Client {
 	var hclient http.Client
 
 	switch proto {
-	case "http/1":
-	case "http/2":
-	case "http/3":
+	case "h1":
+	case "h2":
+	case "h3":
 		roundTripper := &h2quic.RoundTripper{
 			TLSClientConfig: &tls.Config{
-				RootCAs: testdata.GetRootCA(),
+				RootCAs: tlsdata.GetRootCA(),
 			},
 		}
 		hclient = http.Client{
@@ -33,16 +34,32 @@ func getHTTPClient(proto string) *http.Client {
 	return &hclient
 }
 
+func getRequestStr(command string, filePath string, proto string) string {
+	var strMethod string
+	switch command {
+	case "L":
+		strMethod = "HEAD"
+	case "W":
+		strMethod = "POST"
+	case "R":
+		strMethod = "GET"
+	case "D":
+		strMethod = "DELETE"
+	}
+
+	return fmt.Sprintf("REQUEST > %s %s %s", proto, strMethod, filePath)
+}
+
 func main() {
 	verbose := flag.Bool("v", false, "verbose")
 	quiet := flag.Bool("q", false, "don't print the data")
-	proto := flag.String("p", "http/1", "Request Protocol http/1, http/2, http/3")
+	proto := flag.String("p", "h1", "Request Protocol h1(http/1), h2(http/2), h3(http/3)")
 	command := flag.String("c", "L", `W/R/L/D, 
 		"W(Write/POST) needs local file path, 
 		"R(Read/GET) needs remote file path, 
-		"L(List/HEAD) needs remote path(file/dir), 
-		"D(Delete/DELETE) needs remote path(file/dir) `)
-	filePath := flag.String("f", "file path", "local or remote path(file/dir)")
+		"L(List/HEAD) needs remote path(file or dir), 
+		"D(Delete/DELETE) needs remote path(file or dir) `)
+	filePath := flag.String("f", "file path", "local or remote path(file or dir)")
 	flag.Parse()
 	urls := flag.Args()
 
@@ -60,6 +77,7 @@ func main() {
 		return
 	}
 
+	logger.Infof(getRequestStr(*command, *filePath, *proto))
 	hclient := getHTTPClient(*proto)
 
 	var wg sync.WaitGroup

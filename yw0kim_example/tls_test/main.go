@@ -10,7 +10,6 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 
@@ -74,33 +73,15 @@ func init() {
 			err := r.ParseMultipartForm(1 << 30) // 1 GB
 			if err == nil {
 				var file multipart.File
-				var fileHeader *multipart.FileHeader
-				file, fileHeader, err = r.FormFile("uploadfile")
+				file, _, err = r.FormFile("uploadfile")
 				if err == nil {
 					var size int64
 					if sizeInterface, ok := file.(Size); ok {
-						uploadedFileName := fileHeader.Filename
-						var saveFile *os.File
-						saveFile, e := os.Create("./" + uploadedFileName) // always truncate
-						if e != nil {
-							e = errors.New("couldn't create file")
-							return
-						}
-						defer saveFile.Close()
-						defer file.Close()
-
 						size = sizeInterface.Size()
 						b := make([]byte, size)
-						rBytes, _ := file.Read(b)
+						file.Read(b)
 						md5 := md5.Sum(b)
 						fmt.Fprintf(w, "%x", md5)
-
-						wBytes, _ := saveFile.Write(b)
-
-						if rBytes == wBytes {
-							fmt.Printf("Write Bytes: %d", wBytes)
-						}
-
 						return
 					}
 					err = errors.New("couldn't get uploaded file size")
@@ -119,9 +100,11 @@ func init() {
 
 func main() {
 	// defer profile.Start().Stop()
-	go func() {
+
+	go func() { // http/1 server
 		log.Println("Call http.ListenAndServe", http.ListenAndServe("localhost:6060", nil))
 	}()
+
 	// runtime.SetBlockProfileRate(1)
 
 	verbose := flag.Bool("v", false, "verbose")
@@ -143,7 +126,7 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir(*www)))
 
 	if len(bs) == 0 {
-		bs = binds{"localhost:6121"}
+		bs = binds{"localhost:6212"}
 	}
 
 	var wg sync.WaitGroup
@@ -153,12 +136,14 @@ func main() {
 		go func() {
 			var err error
 			if *tcp {
+				// certFile, keyFile := testdata.GetCertificatePaths()
 				certFile, keyFile := tlsdata.GetCertificatePaths()
 				err = h2quic.ListenAndServe(bCap, certFile, keyFile, nil)
 			} else {
 				server := h2quic.Server{
 					Server: &http.Server{Addr: bCap},
 				}
+				// err = server.ListenAndServeTLS(testdata.GetCertificatePaths())
 				err = server.ListenAndServeTLS(tlsdata.GetCertificatePaths())
 			}
 			if err != nil {
