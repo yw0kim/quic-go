@@ -64,7 +64,8 @@ func init() {
 		if err != nil {
 			fmt.Printf("error reading body while handling /echo: %s\n", err.Error())
 		}
-		w.Write(body)
+		resp := append(body, "(From Server)"...)
+		w.Write(resp)
 	})
 
 	// accept file uploads and return the MD5 of the uploaded file
