@@ -7,18 +7,19 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
+
+	"golang.org/x/net/http2"
+
+	"github.com/lucas-clemente/quic-go/h2quic"
+	"github.com/lucas-clemente/quic-go/yw0kim_example/tlsdata"
 
 	_ "net/http/pprof"
 
-	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/yw0kim_example/tlsdata"
 )
 
 type binds []string
@@ -59,7 +60,7 @@ func init() {
 		io.WriteString(w, "</body></html>")
 	})
 
-	http.HandleFunc("/demo/echo", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			fmt.Printf("error reading body while handling /echo: %s\n", err.Error())
@@ -72,7 +73,7 @@ func init() {
 	// maximum accepted file size is 1 GB
 	http.HandleFunc("/demo/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			err := r.ParseMultipartForm(1 << 30) // 1 GB
+			err := r.ParseMultipartForm(1 << 32) // (1<<30, 1 GB), (1<<32, 4GB)
 			if err == nil {
 				var file multipart.File
 				var fileHeader *multipart.FileHeader
@@ -120,16 +121,30 @@ func init() {
 
 func main() {
 	// defer profile.Start().Stop()
-	go func() {
-		log.Println("Call http.ListenAndServe", http.ListenAndServe("localhost:6060", nil))
-	}()
-	// runtime.SetBlockProfileRate(1)
+	// url := "localhost"
+
+	/*
+		go func() {
+			log.Println("Call http.ListenAndServe", http.ListenAndServe(url+":6001", nil))
+		}()
+		// runtime.SetBlockProfileRate(1)
+		go func() {
+			log.Println("Call http2.ListenAndServe")
+			var srv http.Server
+			http2.ConfigureServer(&srv, nil)
+			srv.ListenAndServeTLS(tlsdata.GetCertificatePaths())
+		}()
+	*/
 
 	verbose := flag.Bool("v", false, "verbose")
-	bs := binds{}
-	flag.Var(&bs, "bind", "bind to")
+	/*
+		bs := binds{}
+		flag.Var(&bs, "bind", "bind to")
+	*/
+	bs := flag.String("bind", "quic.yw.com", "bind address")
 	www := flag.String("www", "/var/www", "www data")
-	tcp := flag.Bool("tcp", false, "also listen on TCP")
+	// tcp := flag.Bool("tcp", false, "also listen on TCP")
+	proto := flag.String("p", "h3", "h1(http/1.1), h2(http/2), h3(http/3)")
 	flag.Parse()
 
 	logger := utils.DefaultLogger
@@ -143,30 +158,64 @@ func main() {
 
 	http.Handle("/", http.FileServer(http.Dir(*www)))
 
-	if len(bs) == 0 {
-		bs = binds{"localhost:6121"}
+	/*
+		if len(bs) == 0 {
+			bs = binds{url + ":6003"}
+		}
+	*/
+
+	var err error
+	certFile, keyFile := tlsdata.GetCertificatePaths()
+	switch *proto {
+	case "h1":
+		bCap := *bs + ":6001"
+		err = http.ListenAndServeTLS(bCap, certFile, keyFile, nil)
+	case "h2":
+		bCap := *bs + ":6002"
+		var server http.Server
+		server.Addr = bCap
+		http2.ConfigureServer(&server, nil)
+		err = server.ListenAndServeTLS(certFile, keyFile)
+	case "h3":
+		bCap := *bs + ":6003"
+		server := h2quic.Server{
+			Server: &http.Server{Addr: bCap},
+		}
+		err = server.ListenAndServeTLS(certFile, keyFile)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(bs))
-	for _, b := range bs {
-		bCap := b
-		go func() {
-			var err error
-			if *tcp {
-				certFile, keyFile := tlsdata.GetCertificatePaths()
-				err = h2quic.ListenAndServe(bCap, certFile, keyFile, nil)
-			} else {
-				server := h2quic.Server{
-					Server: &http.Server{Addr: bCap},
-				}
-				err = server.ListenAndServeTLS(tlsdata.GetCertificatePaths())
-			}
-			if err != nil {
-				fmt.Println(err)
-			}
-			wg.Done()
-		}()
+	if err != nil {
+		fmt.Println(err)
 	}
-	wg.Wait()
+
+	/*
+		var wg sync.WaitGroup
+		wg.Add(len(bs))
+		for _, b := range bs {
+			bCap := b
+			go func() {
+				var err error
+				if *tcp {
+					certFile, keyFile := tlsdata.GetCertificatePaths()
+					// ListenAndServe listens on the given network address for both, TLS and QUIC
+					// connetions in parallel. It returns if one of the two returns an error.
+					// http.DefaultServeMux is used when handler is nil.
+					// The correct Alt-Svc headers for QUIC are set.
+					err = h2quic.ListenAndServe(bCap, certFile, keyFile, nil)
+				} else {
+					server := h2quic.Server{
+						Server: &http.Server{Addr: bCap},
+					}
+					// ListenAndServeTLS listens on the UDP address s.Addr and calls s.Handler to handle HTTP/2 requests on incoming connections.
+					// ListenAndServeTLS -> serveImpl -> quicListenAddr
+					err = server.ListenAndServeTLS(tlsdata.GetCertificatePaths())
+				}
+				if err != nil {
+					fmt.Println(err)
+				}
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+	*/
 }
