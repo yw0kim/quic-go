@@ -12,9 +12,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/utils"
+	jsonstruct "github.com/lucas-clemente/quic-go/yw0kim_example"
 	"github.com/lucas-clemente/quic-go/yw0kim_example/tlsdata"
 	"golang.org/x/net/http2"
 )
@@ -81,7 +83,7 @@ func loadFile(path string, params map[string]string) bytes.Buffer {
 	return retBody
 }
 
-func makeRequest(command, pathOrMsg, reqHost, proto string) http.Request {
+func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
 	var err error
 	var req *http.Request
 	var reqBody bytes.Buffer
@@ -89,7 +91,8 @@ func makeRequest(command, pathOrMsg, reqHost, proto string) http.Request {
 	getURL := func(params map[string]string) url.URL {
 		var url url.URL
 		url.Scheme = "https"
-		url.Host = reqHost
+		url.Host = reqURL[0:strings.IndexAny(reqURL, "/")]
+		url.Path = reqURL[strings.IndexAny(reqURL, "/"):]
 		switch proto {
 		case "h1":
 			url.Host += ":6001"
@@ -104,40 +107,37 @@ func makeRequest(command, pathOrMsg, reqHost, proto string) http.Request {
 			query.Set(key, val)
 		}
 		url.RawQuery = query.Encode()
-		if command != "E" {
-			url.Path = pathOrMsg
-		} else {
-			url.Path = "echo"
-		}
+
 		return url
 	}
 
-	var urlParams map[string]string
-	urlParams = map[string]string{}
+	// var urlParams map[string]string
+	// urlParams = map[string]string{}
 	switch command {
 	case "E": // echo
-		urlParams["query"] = "echo"
-		url := getURL(urlParams)
+		// urlParams["query"] = "echo"
+		url := getURL(nil)
 		reqBody = *bytes.NewBufferString(pathOrMsg)
 		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
-	case "L":
-		urlParams["query"] = "list"
-		url := getURL(urlParams)
-		req, err = http.NewRequest(http.MethodGet, url.String(), nil)
-	case "W": // write
-		urlParams["query"] = "write"
-		url := getURL(urlParams)
+	case "L": // HEAD
+		// urlParams["query"] = "list"
+		url := getURL(nil)
+		req, err = http.NewRequest(http.MethodHead, url.String(), nil)
+	case "W": // POST
+		// urlParams["query"] = "write"
+		url := getURL(nil)
 		// var fileParams map[string]string
 		reqBody = loadFile(pathOrMsg, nil)
 		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
 	// File is only can be read
-	case "R":
-		urlParams["query"] = "read"
-		url := getURL(urlParams)
-		req, err = http.NewRequest(http.MethodGet, url.String(), nil)
-	case "D":
-		urlParams["query"] = "delete"
-		url := getURL(urlParams)
+	case "R": // GET
+		// urlParams["query"] = "read"
+		url := getURL(nil)
+		req, err = http.NewRequest(http.MethodGet, "", nil)
+		req.URL = &url
+	case "D": //DELETE
+		// urlParams["query"] = "delete"
+		url := getURL(nil)
 		req, err = http.NewRequest(http.MethodDelete, url.String(), nil)
 	}
 
@@ -146,6 +146,22 @@ func makeRequest(command, pathOrMsg, reqHost, proto string) http.Request {
 	}
 
 	return *req
+}
+
+func handleHeadResponse(resp http.Response) {
+	var fInfos jsonstruct.FileInfos
+
+}
+
+func handleResponse(resp http.Response) {
+
+	switch resp.Request.Method {
+	case "HEAD":
+		handleHeadResponse(resp)
+	case "GET":
+	case "POST":
+	case "DELETE":
+	}
 }
 
 func main() {
@@ -159,7 +175,7 @@ func main() {
 		"L(List/HEAD) needs remote path(file or dir),\n"+
 		"D(Delete/DELETE) needs remote path(file or dir)\n"+
 		"E(Echo/POST) echo for test\n")
-	filePath := flag.String("f", "file path", "local or remote path(file or dir)\n")
+	file := flag.String("f", "", "local or remote path(file or dir)\n")
 	flag.Parse()
 	urls := flag.Args()
 
@@ -173,16 +189,13 @@ func main() {
 	logger.SetLogTimeFormat("")
 
 	if *echo != "not set" && *command == "E" {
-		*filePath = *echo
-	} else if *filePath == "file path" {
-		logger.Infof("file path is not set")
-		return
+		*file = *echo
 	}
 
 	var req http.Request
-	req = makeRequest(*command, *filePath, urls[0], *proto)
+	req = makeRequest(*command, *file, urls[0], *proto)
 	reqStr := func(req http.Request) string {
-		return fmt.Sprintf("Request : %s %s %s.", *command, urls[0], *filePath)
+		return fmt.Sprintf("Request : %s %s %s.", req.Method, req.URL.String(), *file)
 	}
 
 	logger.Infof(reqStr(req))
@@ -193,16 +206,27 @@ func main() {
 	}
 	logger.Infof("Got response for %s: %#v", urls[0], rsp)
 
+
 	body := &bytes.Buffer{}
 	_, err = io.Copy(body, rsp.Body)
 	if err != nil {
 		panic(err)
 	}
 	if *quiet {
-		logger.Infof("Request Body: %d bytes", body.Len())
+		logger.Infof("Resoponse Body: %d bytes", body.Len())
 	} else {
-		logger.Infof("Request Body:")
-		logger.Infof("%s", body.Bytes())
+		if *command != "E" {
+			handleResponse(*rsp)
+		} else if {
+
+		} else{
+			body := &bytes.Buffer{}
+			_, err = io.Copy(body, rsp.Body)
+			if err != nil {
+				panic(err)
+			}
+			logger.Infof("%s", body.Bytes())
+		}
 	}
 
 	/*
