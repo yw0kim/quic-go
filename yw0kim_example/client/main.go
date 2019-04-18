@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -119,10 +120,10 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
 		url := getURL(nil)
 		reqBody = *bytes.NewBufferString(pathOrMsg)
 		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
-	case "L": // HEAD
+	case "L": // GET
 		// urlParams["query"] = "list"
 		url := getURL(nil)
-		req, err = http.NewRequest(http.MethodHead, url.String(), nil)
+		req, err = http.NewRequest(http.MethodGet, url.String(), nil)
 	case "W": // POST
 		// urlParams["query"] = "write"
 		url := getURL(nil)
@@ -148,17 +149,26 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
 	return *req
 }
 
-func handleHeadResponse(resp http.Response) {
+func handleGetResponse(body *bytes.Buffer) {
 	var fInfos jsonstruct.FileInfos
+	json.Unmarshal(body.Bytes(), &fInfos)
 
+	for _, fileInfo := range fInfos {
+		fmt.Printf(
+			"%s\t%16d\t%s\t%s\n",
+			fileInfo.Mode,
+			fileInfo.Size,
+			fileInfo.ModTime.Format("Jan 2 15:04 2006"),
+			fileInfo.Name,
+		)
+	}
 }
 
-func handleResponse(resp http.Response) {
+func handleResponse(resp *http.Response) {
 
 	switch resp.Request.Method {
-	case "HEAD":
-		handleHeadResponse(resp)
 	case "GET":
+		handleGetResponse(body)
 	case "POST":
 	case "DELETE":
 	}
@@ -166,7 +176,7 @@ func handleResponse(resp http.Response) {
 
 func main() {
 	verbose := flag.Bool("v", false, "verbose")
-	quiet := flag.Bool("q", false, "don't print the data")
+	// quiet := flag.Bool("q", false, "don't print the data")
 	echo := flag.String("e", "not set", "echo msg for test")
 	proto := flag.String("p", "h1", "Request Protocol h1(http/1), h2(http/2), h3(http/3)\n")
 	command := flag.String("c", "L", "W/R/L/D/E\n"+
@@ -199,34 +209,32 @@ func main() {
 	}
 
 	logger.Infof(reqStr(req))
+
 	hclient := getHTTPClient(*proto)
 	rsp, err := hclient.Do(&req)
 	if err != nil {
 		panic(err)
 	}
+
+	/*
+		httputil.DumpRequestOut(&req, true)
+		rsp, err := http.DefaultClient.Do(&req)
+		httputil.DumpResponse(rsp, true)
+	*/
+	//testBody, _ := ioutil.ReadAll(rsp.Body)
+
 	logger.Infof("Got response for %s: %#v", urls[0], rsp)
-
-
-	body := &bytes.Buffer{}
-	_, err = io.Copy(body, rsp.Body)
-	if err != nil {
-		panic(err)
-	}
-	if *quiet {
-		logger.Infof("Resoponse Body: %d bytes", body.Len())
-	} else {
-		if *command != "E" {
-			handleResponse(*rsp)
-		} else if {
-
-		} else{
-			body := &bytes.Buffer{}
-			_, err = io.Copy(body, rsp.Body)
-			if err != nil {
-				panic(err)
-			}
-			logger.Infof("%s", body.Bytes())
+	// logger.Infof("body Response Body: %d bytes", body.Len())
+	// logger.Infof("testBody Response Body: %d bytes", len(testBody))
+	if *command != "E" { // L/R/W/D
+		handleResponse(rsp)
+	} else { // Echo
+		body := &bytes.Buffer{}
+		_, err = io.Copy(body, rsp.Body)
+		if err != nil {
+			panic(err)
 		}
+		logger.Infof("Echo Mesg : %s", body.Bytes())
 	}
 
 	/*

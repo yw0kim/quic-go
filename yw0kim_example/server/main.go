@@ -71,24 +71,30 @@ func getFileInfos(path string) jsonstruct.FileInfos {
 }
 
 func listFileHandler(w http.ResponseWriter, r *http.Request) {
-	fInfos := getFileInfos(r.URL.Path[1:])
-	for _, fileInfo := range fInfos {
-		fmt.Printf(
-			"%s\t%16d\t%s\t%s\n",
-			fileInfo.Mode,
-			fileInfo.Size,
-			fileInfo.ModTime.Format("Jan 2 15:04 2006"),
-			fileInfo.Name,
-		)
-	}
-
-	jsonBytes, err := json.Marshal(fInfos)
+	path := r.URL.Path[1:]
+	file, err := os.Open(path)
 	if err != nil {
 		panic(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonBytes)
-	// fmt.Println(string(jsonBytes))
+	defer file.Close()
+
+	if fi, _ := file.Stat(); fi.IsDir() { // GET Directory : return files' info
+		fInfos := getFileInfos(path)
+		jsonBytes, err := json.Marshal(fInfos)
+		if err != nil {
+			panic(err)
+		}
+		w.Header().Set("IsDir", "true")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, err = w.Write(jsonBytes)
+	} else {
+
+	}
+
+	if err != nil {
+		panic(err)
+	}
 }
 
 func requestLogger(targetMux http.HandlerFunc) http.HandlerFunc {
@@ -133,8 +139,8 @@ func main() {
 		}
 	*/
 	r := mux.NewRouter()
-	r.HandleFunc("/echo", requestLogger(echoHandler)).Methods("POST")
-	r.PathPrefix("/data").HandlerFunc(requestLogger(listFileHandler)).Methods("HEAD")
+	r.PathPrefix("/echo").HandlerFunc(requestLogger(echoHandler)).Methods("POST")
+	r.PathPrefix("/data").HandlerFunc(requestLogger(listFileHandler)).Methods("GET")
 	// r.PathPrefix("/data/").HandlerFunc(requestLogger(listFileHandler)).Methods("GET")
 	http.Handle("/", r)
 	var err error
