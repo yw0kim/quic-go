@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,7 +79,8 @@ func listFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	if fi, _ := file.Stat(); fi.IsDir() { // GET Directory : return files' info
+	fi, _ := file.Stat()
+	if fi.IsDir() { // GET Directory : return files' info
 		fInfos := getFileInfos(path)
 		jsonBytes, err := json.Marshal(fInfos)
 		if err != nil {
@@ -89,7 +91,21 @@ func listFileHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, err = w.Write(jsonBytes)
 	} else {
+		fBytes := make([]byte, fi.Size())
+		nBytes, err := file.Read(fBytes)
+		if err != nil {
+			panic(err)
+		}
 
+		mime := http.DetectContentType(fBytes)
+		w.Header().Set("IsDir", "false")
+		w.Header().Set("Content-Type", mime)
+		w.Header().Set("Content-Disposition", "attachment; filename="+filepath.Base(path)+"")
+		w.Header().Set("Expires", "0")
+		w.Header().Set("Content-Transfer-Encoding", "binary")
+		w.Header().Set("Content-Length", strconv.Itoa(nBytes))
+		w.Header().Set("Content-Control", "private, no-transform, no-store, must-revalidate")
+		_, err = w.Write(fBytes)
 	}
 
 	if err != nil {

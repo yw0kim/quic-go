@@ -7,19 +7,24 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	jsonstruct "github.com/lucas-clemente/quic-go/yw0kim_example"
 	"github.com/lucas-clemente/quic-go/yw0kim_example/tlsdata"
 	"golang.org/x/net/http2"
+	pb "gopkg.in/cheggaaa/pb.v1"
 )
 
 func getHTTPClient(proto string) *http.Client {
@@ -114,32 +119,17 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
 
 	// var urlParams map[string]string
 	// urlParams = map[string]string{}
+	url := getURL(nil)
 	switch command {
 	case "E": // echo
 		// urlParams["query"] = "echo"
-		url := getURL(nil)
 		reqBody = *bytes.NewBufferString(pathOrMsg)
 		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
-	case "L": // GET
-		// urlParams["query"] = "list"
-		url := getURL(nil)
-		req, err = http.NewRequest(http.MethodGet, url.String(), nil)
 	case "W": // POST
-		// urlParams["query"] = "write"
-		url := getURL(nil)
-		// var fileParams map[string]string
 		reqBody = loadFile(pathOrMsg, nil)
 		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
-	// File is only can be read
 	case "R": // GET
-		// urlParams["query"] = "read"
-		url := getURL(nil)
-		req, err = http.NewRequest(http.MethodGet, "", nil)
-		req.URL = &url
-	case "D": //DELETE
-		// urlParams["query"] = "delete"
-		url := getURL(nil)
-		req, err = http.NewRequest(http.MethodDelete, url.String(), nil)
+		req, err = http.NewRequest(http.MethodGet, url.String(), nil)
 	}
 
 	if err != nil {
@@ -149,9 +139,14 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
 	return *req
 }
 
-func handleGetResponse(body *bytes.Buffer) {
+func handleGetDirResponse(resp *http.Response) {
 	var fInfos jsonstruct.FileInfos
-	json.Unmarshal(body.Bytes(), &fInfos)
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	json.Unmarshal(body, &fInfos)
 
 	for _, fileInfo := range fInfos {
 		fmt.Printf(
@@ -164,13 +159,41 @@ func handleGetResponse(body *bytes.Buffer) {
 	}
 }
 
-func handleResponse(resp *http.Response) {
+func handleGetFileResponse(resp *http.Response) {
+	fname := filepath.Base(resp.Request.URL.Path)
+	file, err := os.Create("./downloads/" + fname)
+	if err != nil {
+		panic(err)
+	}
 
+	contentLength, _ := strconv.Atoi(resp.Header.Get("Content-Length"))
+	bar := pb.New(contentLength).Prefix(fname)
+	bar.Units = pb.U_BYTES
+	bar.ShowCounters = true
+	bar.RefreshRate = time.Millisecond * 10
+	bar.Start()
+	proxyReader := bar.NewProxyReader(resp.Body)
+	bytesFile, err := ioutil.ReadAll(proxyReader)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = file.Write(bytesFile)
+	if err != nil {
+		panic(err)
+	}
+	file.Sync()
+}
+
+func handleResponse(resp *http.Response) {
 	switch resp.Request.Method {
 	case "GET":
-		handleGetResponse(body)
+		if resp.Header.Get("IsDir") == "true" {
+			handleGetDirResponse(resp)
+		} else {
+			handleGetFileResponse(resp)
+		}
 	case "POST":
-	case "DELETE":
 	}
 }
 
@@ -179,11 +202,9 @@ func main() {
 	// quiet := flag.Bool("q", false, "don't print the data")
 	echo := flag.String("e", "not set", "echo msg for test")
 	proto := flag.String("p", "h1", "Request Protocol h1(http/1), h2(http/2), h3(http/3)\n")
-	command := flag.String("c", "L", "W/R/L/D/E\n"+
-		"W(Write/POST) needs local file path,\n"+
-		"R(Read/GET) needs remote file path,\n"+
-		"L(List/HEAD) needs remote path(file or dir),\n"+
-		"D(Delete/DELETE) needs remote path(file or dir)\n"+
+	command := flag.String("c", "L", "W/R/D/E\n"+
+		"W(Write/POST),\n"+
+		"R(Read/GET),\n"+
 		"E(Echo/POST) echo for test\n")
 	file := flag.String("f", "", "local or remote path(file or dir)\n")
 	flag.Parse()
@@ -205,25 +226,32 @@ func main() {
 	var req http.Request
 	req = makeRequest(*command, *file, urls[0], *proto)
 	reqStr := func(req http.Request) string {
-		return fmt.Sprintf("Request : %s %s %s.", req.Method, req.URL.String(), *file)
+		reqDump, err := httputil.DumpRequest(&req, true)
+		if err != nil {
+			panic(err)
+		}
+		return string(reqDump)
 	}
 
 	logger.Infof(reqStr(req))
 
+	start := time.Now()
 	hclient := getHTTPClient(*proto)
 	rsp, err := hclient.Do(&req)
 	if err != nil {
 		panic(err)
 	}
 
-	/*
-		httputil.DumpRequestOut(&req, true)
-		rsp, err := http.DefaultClient.Do(&req)
-		httputil.DumpResponse(rsp, true)
-	*/
-	//testBody, _ := ioutil.ReadAll(rsp.Body)
-
-	logger.Infof("Got response for %s: %#v", urls[0], rsp)
+	var rspDump []byte
+	if rsp.Request.Method == "GET" && rsp.Header.Get("IsDir") == "false" {
+		rspDump, err = httputil.DumpResponse(rsp, false)
+	} else {
+		rspDump, err = httputil.DumpResponse(rsp, true)
+	}
+	if err != nil {
+		panic(err)
+	}
+	logger.Infof("Got response for %s: %s", urls[0], string(rspDump))
 	// logger.Infof("body Response Body: %d bytes", body.Len())
 	// logger.Infof("testBody Response Body: %d bytes", len(testBody))
 	if *command != "E" { // L/R/W/D
@@ -236,33 +264,5 @@ func main() {
 		}
 		logger.Infof("Echo Mesg : %s", body.Bytes())
 	}
-
-	/*
-		var wg sync.WaitGroup
-		wg.Add(len(urls))
-		for _, addr := range urls {
-			logger.Infof("GET %s", addr)
-			go func(addr string) {
-				rsp, err := hclient.Get(addr)
-				if err != nil {
-					panic(err)
-				}
-				logger.Infof("Got response for %s: %#v", addr, rsp)
-
-				body := &bytes.Buffer{}
-				_, err = io.Copy(body, rsp.Body)
-				if err != nil {
-					panic(err)
-				}
-				if *quiet {
-					logger.Infof("Request Body: %d bytes", body.Len())
-				} else {
-					logger.Infof("Request Body:")
-					logger.Infof("%s", body.Bytes())
-				}
-				wg.Done()
-			}(addr)
-		}
-		wg.Wait()
-	*/
+	logger.Infof("Elapsed Time: %s", time.Since(start))
 }
