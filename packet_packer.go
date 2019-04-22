@@ -47,6 +47,10 @@ func (p *packedPacket) EncryptionLevel() protocol.EncryptionLevel {
 	}
 }
 
+func (p *packedPacket) IsAckEliciting() bool {
+	return ackhandler.HasAckElicitingFrames(p.frames)
+}
+
 func (p *packedPacket) ToAckHandlerPacket() *ackhandler.Packet {
 	return &ackhandler.Packet{
 		PacketNumber:    p.header.PacketNumber,
@@ -76,8 +80,8 @@ func getMaxPacketSize(addr net.Addr) protocol.ByteCount {
 }
 
 type packetNumberManager interface {
-	PeekPacketNumber() (protocol.PacketNumber, protocol.PacketNumberLen)
-	PopPacketNumber() protocol.PacketNumber
+	PeekPacketNumber(protocol.EncryptionLevel) (protocol.PacketNumber, protocol.PacketNumberLen)
+	PopPacketNumber(protocol.EncryptionLevel) protocol.PacketNumber
 }
 
 type sealingManager interface {
@@ -111,8 +115,8 @@ type packetPacker struct {
 	framer    frameSource
 	acks      ackFrameSource
 
-	maxPacketSize             protocol.ByteCount
-	numNonRetransmittableAcks int
+	maxPacketSize          protocol.ByteCount
+	numNonAckElicitingAcks int
 }
 
 var _ packer = &packetPacker{}
@@ -150,7 +154,7 @@ func (p *packetPacker) PackConnectionClose(ccf *wire.ConnectionCloseFrame) (*pac
 	frames := []wire.Frame{ccf}
 	encLevel, sealer := p.cryptoSetup.GetSealer()
 	header := p.getHeader(encLevel)
-	return p.writeAndSealPacket(header, frames, sealer)
+	return p.writeAndSealPacket(header, frames, encLevel, sealer)
 }
 
 func (p *packetPacker) MaybePackAckPacket() (*packedPacket, error) {
@@ -162,7 +166,7 @@ func (p *packetPacker) MaybePackAckPacket() (*packedPacket, error) {
 	encLevel, sealer := p.cryptoSetup.GetSealer()
 	header := p.getHeader(encLevel)
 	frames := []wire.Frame{ack}
-	return p.writeAndSealPacket(header, frames, sealer)
+	return p.writeAndSealPacket(header, frames, encLevel, sealer)
 }
 
 // PackRetransmission packs a retransmission
@@ -229,7 +233,7 @@ func (p *packetPacker) PackRetransmission(packet *ackhandler.Packet) ([]*packedP
 		if sf, ok := frames[len(frames)-1].(*wire.StreamFrame); ok {
 			sf.DataLenPresent = false
 		}
-		p, err := p.writeAndSealPacket(header, frames, sealer)
+		p, err := p.writeAndSealPacket(header, frames, encLevel, sealer)
 		if err != nil {
 			return nil, err
 		}
@@ -267,18 +271,18 @@ func (p *packetPacker) PackPacket() (*packedPacket, error) {
 		return nil, nil
 	}
 	// check if this packet only contains an ACK
-	if !ackhandler.HasRetransmittableFrames(frames) {
-		if p.numNonRetransmittableAcks >= protocol.MaxNonRetransmittableAcks {
+	if !ackhandler.HasAckElicitingFrames(frames) {
+		if p.numNonAckElicitingAcks >= protocol.MaxNonAckElicitingAcks {
 			frames = append(frames, &wire.PingFrame{})
-			p.numNonRetransmittableAcks = 0
+			p.numNonAckElicitingAcks = 0
 		} else {
-			p.numNonRetransmittableAcks++
+			p.numNonAckElicitingAcks++
 		}
 	} else {
-		p.numNonRetransmittableAcks = 0
+		p.numNonAckElicitingAcks = 0
 	}
 
-	return p.writeAndSealPacket(header, frames, sealer)
+	return p.writeAndSealPacket(header, frames, encLevel, sealer)
 }
 
 func (p *packetPacker) maybePackCryptoPacket() (*packedPacket, error) {
@@ -319,7 +323,7 @@ func (p *packetPacker) maybePackCryptoPacket() (*packedPacket, error) {
 		cf := s.PopCryptoFrame(p.maxPacketSize - hdrLen - protocol.ByteCount(sealer.Overhead()) - length)
 		frames = append(frames, cf)
 	}
-	return p.writeAndSealPacket(hdr, frames, sealer)
+	return p.writeAndSealPacket(hdr, frames, encLevel, sealer)
 }
 
 func (p *packetPacker) composeNextPacket(maxFrameSize protocol.ByteCount) ([]wire.Frame, error) {
@@ -353,7 +357,7 @@ func (p *packetPacker) composeNextPacket(maxFrameSize protocol.ByteCount) ([]wir
 }
 
 func (p *packetPacker) getHeader(encLevel protocol.EncryptionLevel) *wire.ExtendedHeader {
-	pn, pnLen := p.pnManager.PeekPacketNumber()
+	pn, pnLen := p.pnManager.PeekPacketNumber(encLevel)
 	header := &wire.ExtendedHeader{}
 	header.PacketNumber = pn
 	header.PacketNumberLen = pnLen
@@ -384,6 +388,7 @@ func (p *packetPacker) getHeader(encLevel protocol.EncryptionLevel) *wire.Extend
 func (p *packetPacker) writeAndSealPacket(
 	header *wire.ExtendedHeader,
 	frames []wire.Frame,
+	encLevel protocol.EncryptionLevel,
 	sealer handshake.Sealer,
 ) (*packedPacket, error) {
 	packetBuffer := getPacketBuffer()
@@ -459,7 +464,7 @@ func (p *packetPacker) writeAndSealPacket(
 		raw[pnOffset:payloadOffset],
 	)
 
-	num := p.pnManager.PopPacketNumber()
+	num := p.pnManager.PopPacketNumber(encLevel)
 	if num != header.PacketNumber {
 		return nil, errors.New("packetPacker BUG: Peeked and Popped packet numbers do not match")
 	}
