@@ -16,7 +16,7 @@ import (
 	"golang.org/x/net/http2"
 
 	"github.com/gorilla/mux"
-	"github.com/lucas-clemente/quic-go/h2quic"
+	"github.com/lucas-clemente/quic-go/http3"
 	jsonstruct "github.com/lucas-clemente/quic-go/yw0kim_example"
 	"github.com/lucas-clemente/quic-go/yw0kim_example/tlsdata"
 
@@ -42,7 +42,10 @@ type Size interface {
 }
 
 func echoHandler(w http.ResponseWriter, r *http.Request) {
+	//dumpR, _ := httputil.DumpRequest(r, true)
+	//fmt.Printf("echo req: %s\n", string(dumpR))
 	body, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
 	if err != nil {
 		fmt.Printf("error reading body while handling /echo: %s\n", err.Error())
 	}
@@ -72,6 +75,8 @@ func getFileInfos(path string) jsonstruct.FileInfos {
 }
 
 func listFileHandler(w http.ResponseWriter, r *http.Request) {
+	//dumpR, _ := httputil.DumpRequest(r, true)
+	//fmt.Printf("echo req: %s\n", string(dumpR))
 	path := r.URL.Path[1:]
 	file, err := os.Open(path)
 	if err != nil {
@@ -88,7 +93,11 @@ func listFileHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("IsDir", "true")
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(jsonBytes)))
 		w.WriteHeader(http.StatusOK)
+		// w.Header()["IsDir"] = "true"
+		//fmt.Printf("rsp writer : %v\n", w)
+		//fmt.Printf("rsp body : %s\n", string(jsonBytes))
 		_, err = w.Write(jsonBytes)
 	} else {
 		fBytes := make([]byte, fi.Size())
@@ -99,12 +108,15 @@ func listFileHandler(w http.ResponseWriter, r *http.Request) {
 
 		mime := http.DetectContentType(fBytes)
 		w.Header().Set("IsDir", "false")
+		fname := filepath.Base(path)
+		w.Header().Set("FileName", fname)
 		w.Header().Set("Content-Type", mime)
-		w.Header().Set("Content-Disposition", "attachment; filename="+filepath.Base(path)+"")
+		w.Header().Set("Content-Disposition", "attachment; filename="+fname+"")
 		w.Header().Set("Expires", "0")
 		w.Header().Set("Content-Transfer-Encoding", "binary")
 		w.Header().Set("Content-Length", strconv.Itoa(nBytes))
 		w.Header().Set("Content-Control", "private, no-transform, no-store, must-revalidate")
+		w.WriteHeader(http.StatusOK)
 		_, err = w.Write(fBytes)
 	}
 
@@ -157,7 +169,6 @@ func main() {
 	r := mux.NewRouter()
 	r.PathPrefix("/echo").HandlerFunc(requestLogger(echoHandler)).Methods("POST")
 	r.PathPrefix("/data").HandlerFunc(requestLogger(listFileHandler)).Methods("GET")
-	// r.PathPrefix("/data/").HandlerFunc(requestLogger(listFileHandler)).Methods("GET")
 	http.Handle("/", r)
 	var err error
 	certFile, keyFile := tlsdata.GetCertificatePaths()
@@ -167,16 +178,21 @@ func main() {
 		err = http.ListenAndServeTLS(bCap, certFile, keyFile, nil)
 	case "h2":
 		bCap := *bs + ":6002"
-		var server http.Server
-		server.Addr = bCap
+		server := http.Server{
+			Addr: bCap,
+		}
 		http2.ConfigureServer(&server, nil)
 		err = server.ListenAndServeTLS(certFile, keyFile)
 	case "h3":
 		bCap := *bs + ":6003"
-		server := h2quic.Server{
+		// tcp
+		err = http3.ListenAndServe(bCap, certFile, keyFile, nil)
+		/* pure http/3
+		server := http3.Server{
 			Server: &http.Server{Addr: bCap},
 		}
 		err = server.ListenAndServeTLS(certFile, keyFile)
+		*/
 	}
 
 	if err != nil {

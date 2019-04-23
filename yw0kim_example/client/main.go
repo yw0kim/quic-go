@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/h2quic"
+	"github.com/lucas-clemente/quic-go/http3"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	jsonstruct "github.com/lucas-clemente/quic-go/yw0kim_example"
 	"github.com/lucas-clemente/quic-go/yw0kim_example/tlsdata"
@@ -27,7 +27,7 @@ import (
 	pb "gopkg.in/cheggaaa/pb.v1"
 )
 
-func getHTTPClient(proto string) *http.Client {
+func getHTTPClient(proto string) http.Client {
 	var hclient http.Client
 	tlsConfig := &tls.Config{
 		RootCAs: tlsdata.GetRootCA(),
@@ -51,12 +51,12 @@ func getHTTPClient(proto string) *http.Client {
 			Transport: roundTripper,
 		}
 		*/
-		hclient.Transport = &h2quic.RoundTripper{
+		hclient.Transport = &http3.RoundTripper{
 			TLSClientConfig: tlsConfig,
 		}
 	}
 
-	return &hclient
+	return hclient
 }
 
 func loadFile(path string, params map[string]string) bytes.Buffer {
@@ -89,7 +89,7 @@ func loadFile(path string, params map[string]string) bytes.Buffer {
 	return retBody
 }
 
-func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
+func makeRequest(command, pathOrMsg, reqURL, proto string) *http.Request {
 	var err error
 	var req *http.Request
 	var reqBody bytes.Buffer
@@ -104,6 +104,7 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
 			url.Host += ":6001"
 		case "h2":
 			url.Host += ":6002"
+			// req.Proto = "HTTP/2"
 		case "h3":
 			url.Host += ":6003"
 		}
@@ -133,10 +134,11 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) http.Request {
 	}
 
 	if err != nil {
+		fmt.Printf("http.NewRequest error : %s\n", err.Error())
 		log.Fatalln(err)
 	}
 
-	return *req
+	return req
 }
 
 func handleGetDirResponse(resp *http.Response) {
@@ -144,6 +146,7 @@ func handleGetDirResponse(resp *http.Response) {
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		fmt.Printf("GET Dir body read error : %s\n", err.Error())
 		panic(err)
 	}
 	json.Unmarshal(body, &fInfos)
@@ -160,7 +163,7 @@ func handleGetDirResponse(resp *http.Response) {
 }
 
 func handleGetFileResponse(resp *http.Response) {
-	fname := filepath.Base(resp.Request.URL.Path)
+	fname := resp.Header.Get("FileName")
 	file, err := os.Create("./downloads/" + fname)
 	if err != nil {
 		panic(err)
@@ -185,8 +188,8 @@ func handleGetFileResponse(resp *http.Response) {
 	file.Sync()
 }
 
-func handleResponse(resp *http.Response) {
-	switch resp.Request.Method {
+func handleResponse(Method string, resp *http.Response) {
+	switch Method {
 	case "GET":
 		if resp.Header.Get("IsDir") == "true" {
 			handleGetDirResponse(resp)
@@ -223,46 +226,57 @@ func main() {
 		*file = *echo
 	}
 
-	var req http.Request
+	var req *http.Request
 	req = makeRequest(*command, *file, urls[0], *proto)
 	reqStr := func(req http.Request) string {
 		reqDump, err := httputil.DumpRequest(&req, true)
 		if err != nil {
 			panic(err)
 		}
-		return string(reqDump)
+		return string(reqDump) + "\n"
 	}
-
-	logger.Infof(reqStr(req))
 
 	start := time.Now()
 	hclient := getHTTPClient(*proto)
-	rsp, err := hclient.Do(&req)
+	// fmt.Printf("hclient : %#v\n", hclient)
+	// fmt.Printf("reqBody : %#v\n %s\n", req.Body, req.Body.Read())
+	rsp, err := hclient.Do(req)
 	if err != nil {
+		fmt.Printf("hclient.Do error : %s\n", err.Error())
 		panic(err)
 	}
+	logger.Infof("Request: ")
+	logger.Infof(reqStr(*req))
+	logger.Infof("---------------------------------")
 
 	var rspDump []byte
-	if rsp.Request.Method == "GET" && rsp.Header.Get("IsDir") == "false" {
+	// fmt.Printf("response : %#v\n ", rsp)
+	// fmt.Printf("rsp.Header : %#v", rsp.Header)
+	if req.Method == "GET" && rsp.Header.Get("IsDir") == "false" {
 		rspDump, err = httputil.DumpResponse(rsp, false)
 	} else {
 		rspDump, err = httputil.DumpResponse(rsp, true)
 	}
+	// logger.Infof("after rspdump")
 	if err != nil {
+		fmt.Printf("response dump error : %s\n", err.Error())
 		panic(err)
 	}
 	logger.Infof("Got response for %s: %s", urls[0], string(rspDump))
 	// logger.Infof("body Response Body: %d bytes", body.Len())
 	// logger.Infof("testBody Response Body: %d bytes", len(testBody))
 	if *command != "E" { // L/R/W/D
-		handleResponse(rsp)
+		handleResponse(req.Method, rsp)
 	} else { // Echo
 		body := &bytes.Buffer{}
 		_, err = io.Copy(body, rsp.Body)
 		if err != nil {
 			panic(err)
 		}
-		logger.Infof("Echo Mesg : %s", body.Bytes())
+		logger.Infof("Echo Msg : %s", body.Bytes())
 	}
-	logger.Infof("Elapsed Time: %s", time.Since(start))
+	elpasedTime := time.Since(start)
+	contentLength, _ := strconv.Atoi(rsp.Header.Get("Content-Length"))
+	logger.Infof("Elapsed Time : %s", elpasedTime)
+	logger.Infof("throughput   : %sMiB/s", (contentLength/1000*1000)/elpasedTime)
 }
