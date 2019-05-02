@@ -66,6 +66,10 @@ func loadFile(path string, params map[string]string) bytes.Buffer {
 	}
 	defer file.Close()
 
+	if fi, _ := file.Stat(); fi.IsDir() {
+		fmt.Println(path + " is dir. Please post file.")
+	}
+
 	var retBody bytes.Buffer
 	multipartWriter := multipart.NewWriter(&retBody)
 	fileWriter, err := multipartWriter.CreateFormFile("filename", filepath.Base(path))
@@ -89,10 +93,47 @@ func loadFile(path string, params map[string]string) bytes.Buffer {
 	return retBody
 }
 
+func getPostRequest(filePath, url string) (*http.Request, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer file.Close()
+
+	fi, _ := file.Stat()
+	if fi.IsDir() {
+		fmt.Println(filePath + " is dir. Please post file.")
+	}
+
+	fName := filepath.Base(filePath)
+	fSize := fi.Size()
+	bar := pb.New(int(fSize)).Prefix(fName)
+	bar.Units = pb.U_BYTES
+	bar.ShowSpeed = true
+	bar.ShowCounters = true
+	bar.RefreshRate = time.Millisecond * 10
+	bar.Start()
+	proxyReader := bar.NewProxyReader(file)
+
+	req, err := http.NewRequest(http.MethodPost, url, proxyReader)
+	req.Header.Set("File-Name", fName)
+	req.Header.Set("Content-Length", string(fSize))
+
+	bufMime := make([]byte, 512)
+	n, err := file.Read(bufMime)
+	if err != nil && err != io.EOF {
+		return req, err
+	}
+	file.Seek(0, 0)
+	mime := http.DetectContentType(bufMime[:n])
+	req.Header.Set("Content-Type", mime)
+
+	return req, err
+}
+
 func makeRequest(command, pathOrMsg, reqURL, proto string) *http.Request {
 	var err error
 	var req *http.Request
-	var reqBody bytes.Buffer
 
 	getURL := func(params map[string]string) url.URL {
 		var url url.URL
@@ -121,15 +162,14 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) *http.Request {
 	// var urlParams map[string]string
 	// urlParams = map[string]string{}
 	url := getURL(nil)
+	var reqBody bytes.Buffer
 	switch command {
-	case "E": // echo
-		// urlParams["query"] = "echo"
+	case "E", "e": // echo
 		reqBody = *bytes.NewBufferString(pathOrMsg)
 		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
-	case "W": // POST
-		reqBody = loadFile(pathOrMsg, nil)
-		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
-	case "R": // GET
+	case "W", "w": // POST
+		req, err = getPostRequest(pathOrMsg, url.String())
+	case "R", "r": // GET
 		req, err = http.NewRequest(http.MethodGet, url.String(), nil)
 	}
 
@@ -141,10 +181,10 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) *http.Request {
 	return req
 }
 
-func handleGetDirResponse(resp *http.Response) {
+func handleGetDirResponse(rsp *http.Response) {
 	var fInfos jsonstruct.FileInfos
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := ioutil.ReadAll(rsp.Body)
 	if err != nil {
 		fmt.Printf("GET Dir body read error : %s\n", err.Error())
 		panic(err)
@@ -162,20 +202,21 @@ func handleGetDirResponse(resp *http.Response) {
 	}
 }
 
-func handleGetFileResponse(resp *http.Response) {
-	fname := resp.Header.Get("FileName")
+func handleGetFileResponse(rsp *http.Response) {
+	fname := rsp.Header.Get("File-Name")
 	file, err := os.Create("./downloads/" + fname)
 	if err != nil {
 		panic(err)
 	}
 
-	contentLength, _ := strconv.Atoi(resp.Header.Get("Content-Length"))
+	contentLength, _ := strconv.Atoi(rsp.Header.Get("Content-Length"))
 	bar := pb.New(contentLength).Prefix(fname)
 	bar.Units = pb.U_BYTES
 	bar.ShowCounters = true
+	bar.ShowSpeed = true
 	bar.RefreshRate = time.Millisecond * 10
 	bar.Start()
-	proxyReader := bar.NewProxyReader(resp.Body)
+	proxyReader := bar.NewProxyReader(rsp.Body)
 	bytesFile, err := ioutil.ReadAll(proxyReader)
 	if err != nil {
 		panic(err)
@@ -188,15 +229,33 @@ func handleGetFileResponse(resp *http.Response) {
 	file.Sync()
 }
 
-func handleResponse(Method string, resp *http.Response) {
+func handlePostResponse(rsp *http.Response) {
+	/*
+		writtenFileSize, _ := strconv.Atoi(rsp.Header.Get("Written-File-Size"))
+		bar := pb.New(writtenFileSize).Prefix(rsp.Header.Get("File-Name"))
+		bar.Units = pb.U_BYTES
+		bar.ShowCounters = true
+		bar.RefreshRate = time.Millisecond * 10
+		bar.Start()
+		proxyReader := bar.NewProxyReader(rsp.Body)
+	*/
+	rspBody, err := ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Write file response : %s", string(rspBody))
+}
+
+func handleResponse(Method string, rsp *http.Response) {
 	switch Method {
 	case "GET":
-		if resp.Header.Get("IsDir") == "true" {
-			handleGetDirResponse(resp)
+		if rsp.Header.Get("IsDir") == "true" {
+			handleGetDirResponse(rsp)
 		} else {
-			handleGetFileResponse(resp)
+			handleGetFileResponse(rsp)
 		}
 	case "POST":
+		handlePostResponse(rsp)
 	}
 }
 
@@ -226,16 +285,16 @@ func main() {
 		*file = *echo
 	}
 
-	var req *http.Request
-	req = makeRequest(*command, *file, urls[0], *proto)
-	reqStr := func(req http.Request) string {
-		reqDump, err := httputil.DumpRequest(&req, true)
-		if err != nil {
-			panic(err)
-		}
-		return string(reqDump) + "\n"
+	if len(urls) <= 0 {
+		fmt.Println("Please enter the url.")
+		return
+	} else if strings.IndexAny(urls[0], "/") == -1 {
+		fmt.Println("Please enter the url path.")
+		return
 	}
 
+	var req *http.Request
+	req = makeRequest(*command, *file, urls[0], *proto)
 	start := time.Now()
 	hclient := getHTTPClient(*proto)
 	// fmt.Printf("hclient : %#v\n", hclient)
@@ -245,8 +304,12 @@ func main() {
 		fmt.Printf("hclient.Do error : %s\n", err.Error())
 		panic(err)
 	}
+	reqDump, err := httputil.DumpRequest(req, true)
+	if err != nil {
+		panic(err)
+	}
 	logger.Infof("Request: ")
-	logger.Infof(reqStr(*req))
+	logger.Infof(string(reqDump))
 	logger.Infof("---------------------------------")
 
 	var rspDump []byte
@@ -262,7 +325,7 @@ func main() {
 		fmt.Printf("response dump error : %s\n", err.Error())
 		panic(err)
 	}
-	logger.Infof("Got response for %s: %s", urls[0], string(rspDump))
+	logger.Infof("Got response for %s: \n%s", urls[0], string(rspDump))
 	// logger.Infof("body Response Body: %d bytes", body.Len())
 	// logger.Infof("testBody Response Body: %d bytes", len(testBody))
 	if *command != "E" { // L/R/W/D
@@ -276,7 +339,13 @@ func main() {
 		logger.Infof("Echo Msg : %s", body.Bytes())
 	}
 	elpasedTime := time.Since(start)
-	contentLength, _ := strconv.Atoi(rsp.Header.Get("Content-Length"))
+
+	var contentLength int64
+	if *command == "W" {
+		contentLength, _ = strconv.ParseInt(req.Header.Get("Content-Length"), 10, 64)
+	} else {
+		contentLength, _ = strconv.ParseInt(rsp.Header.Get("Content-Length"), 10, 64)
+	}
 	logger.Infof("Elapsed Time : %s", elpasedTime)
-	logger.Infof("throughput   : %sMiB/s", (contentLength/1000*1000)/elpasedTime)
+	logger.Infof("throughput   : %.2fMiB/s", (float64(contentLength)/(1024*1024))/(elpasedTime.Seconds()))
 }

@@ -74,7 +74,7 @@ func getFileInfos(path string) jsonstruct.FileInfos {
 	return fInfos
 }
 
-func listFileHandler(w http.ResponseWriter, r *http.Request) {
+func getHandler(w http.ResponseWriter, r *http.Request) {
 	//dumpR, _ := httputil.DumpRequest(r, true)
 	//fmt.Printf("echo req: %s\n", string(dumpR))
 	path := r.URL.Path[1:]
@@ -94,22 +94,20 @@ func listFileHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("IsDir", "true")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(jsonBytes)))
+		fmt.Printf("%s\n %#v\n", strconv.Itoa(len(jsonBytes)), strconv.Itoa(len(jsonBytes)))
 		w.WriteHeader(http.StatusOK)
-		// w.Header()["IsDir"] = "true"
-		//fmt.Printf("rsp writer : %v\n", w)
-		//fmt.Printf("rsp body : %s\n", string(jsonBytes))
 		_, err = w.Write(jsonBytes)
+		fmt.Printf("header.get: %s", w.Header().Get("Cotent-Legth"))
 	} else {
 		fBytes := make([]byte, fi.Size())
 		nBytes, err := file.Read(fBytes)
 		if err != nil {
 			panic(err)
 		}
-
 		mime := http.DetectContentType(fBytes)
 		w.Header().Set("IsDir", "false")
 		fname := filepath.Base(path)
-		w.Header().Set("FileName", fname)
+		w.Header().Set("File-Name", fname)
 		w.Header().Set("Content-Type", mime)
 		w.Header().Set("Content-Disposition", "attachment; filename="+fname+"")
 		w.Header().Set("Expires", "0")
@@ -123,6 +121,39 @@ func listFileHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func postHandler(w http.ResponseWriter, r *http.Request) {
+	fname := r.Header.Get("File-Name")
+	file, err := os.Create("./data/" + fname)
+	if err != nil {
+		panic(err)
+	}
+
+	contentLength, _ := strconv.Atoi(r.Header.Get("Content-Length"))
+	bytesFile, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	w.Header().Set("File-Name", fname)
+	nBytes, err := file.Write(bytesFile)
+	if err != nil {
+		panic(err)
+	} else if contentLength != nBytes {
+		fmt.Println("contentLength != nBytes")
+		// fail
+		w.WriteHeader(http.StatusForbidden)
+		rspStr := "Writing " + fname + " is failed."
+		_, err = w.Write([]byte(rspStr))
+		return
+	}
+	file.Sync()
+
+	w.Header().Set("Written-File-Size", strconv.Itoa(nBytes))
+	w.WriteHeader(http.StatusOK)
+	rspStr := fname + " is written in server."
+	_, err = w.Write([]byte(rspStr))
 }
 
 func requestLogger(targetMux http.HandlerFunc) http.HandlerFunc {
@@ -147,7 +178,7 @@ func main() {
 	bs := flag.String("bind", "quic.yw.com", "bind address")
 	// rootDir := flag.String("dir", "./data", "data root directory")
 	// tcp := flag.Bool("tcp", false, "also listen on TCP")
-	proto := flag.String("p", "h3", "h1(http/1.1), h2(http/2), h3(http/3)")
+	proto := flag.String("p", "h1", "h1(http/1.1), h2(http/2), h3(http/3), a(All protocol work)")
 	flag.Parse()
 
 	logger := utils.DefaultLogger
@@ -168,7 +199,8 @@ func main() {
 	*/
 	r := mux.NewRouter()
 	r.PathPrefix("/echo").HandlerFunc(requestLogger(echoHandler)).Methods("POST")
-	r.PathPrefix("/data").HandlerFunc(requestLogger(listFileHandler)).Methods("GET")
+	r.PathPrefix("/data").HandlerFunc(requestLogger(getHandler)).Methods("GET")
+	r.PathPrefix("/data").HandlerFunc(requestLogger(postHandler)).Methods("POST")
 	http.Handle("/", r)
 	var err error
 	certFile, keyFile := tlsdata.GetCertificatePaths()
@@ -230,65 +262,3 @@ func main() {
 		wg.Wait()
 	*/
 }
-
-/*
-func init() {
-	http.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
-		body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			fmt.Printf("error reading body while handling /echo: %s\n", err.Error())
-		}
-		resp := append(body, "(From Server)"...)
-		w.Write(resp)
-	})
-
-	// accept file uploads and return the MD5 of the uploaded file
-	// maximum accepted file size is 2 GB
-	http.HandleFunc("/demo/upload", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			err := r.ParseMultipartForm(1 << 31) // (1<<30, 1 GB)
-			if err == nil {
-				var file multipart.File
-				var fileHeader *multipart.FileHeader
-				file, fileHeader, err = r.FormFile("uploadfile")
-				if err == nil {
-					var size int64
-					if sizeInterface, ok := file.(Size); ok {
-						uploadedFileName := fileHeader.Filename
-						var saveFile *os.File
-						saveFile, e := os.Create("./" + uploadedFileName) // always truncate
-						if e != nil {
-							e = errors.New("couldn't create file")
-							return
-						}
-						defer saveFile.Close()
-						defer file.Close()
-
-						size = sizeInterface.Size()
-						b := make([]byte, size)
-						rBytes, _ := file.Read(b)
-						md5 := md5.Sum(b)
-						fmt.Fprintf(w, "%x", md5)
-
-						wBytes, _ := saveFile.Write(b)
-
-						if rBytes == wBytes {
-							fmt.Printf("Write Bytes: %d", wBytes)
-						}
-
-						return
-					}
-					err = errors.New("couldn't get uploaded file size")
-				}
-			}
-			if err != nil {
-				utils.DefaultLogger.Infof("Error receiving upload: %#v", err)
-			}
-		}
-		io.WriteString(w, `<html><body><form action="/demo/upload" method="post" enctype="multipart/form-data">
-				<input type="file" name="uploadfile"><br>
-				<input type="submit">
-			</form></body></html>`)
-	})
-}
-*/
