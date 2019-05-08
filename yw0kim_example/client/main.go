@@ -98,7 +98,6 @@ func getPostRequest(filePath, url string) (*http.Request, error) {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	defer file.Close()
 
 	fi, _ := file.Stat()
 	if fi.IsDir() {
@@ -106,18 +105,19 @@ func getPostRequest(filePath, url string) (*http.Request, error) {
 	}
 
 	fName := filepath.Base(filePath)
-	fSize := fi.Size()
-	bar := pb.New(int(fSize)).Prefix(fName)
+	fSize := int(fi.Size())
+	bar := pb.New(fSize).Prefix(fName)
 	bar.Units = pb.U_BYTES
 	bar.ShowSpeed = true
 	bar.ShowCounters = true
 	bar.RefreshRate = time.Millisecond * 10
+
 	bar.Start()
 	proxyReader := bar.NewProxyReader(file)
 
 	req, err := http.NewRequest(http.MethodPost, url, proxyReader)
 	req.Header.Set("File-Name", fName)
-	req.Header.Set("Content-Length", string(fSize))
+	req.Header.Set("File-Size", strconv.Itoa(fSize))
 
 	bufMime := make([]byte, 512)
 	n, err := file.Read(bufMime)
@@ -135,47 +135,47 @@ func makeRequest(command, pathOrMsg, reqURL, proto string) *http.Request {
 	var err error
 	var req *http.Request
 
-	getURL := func(params map[string]string) url.URL {
-		var url url.URL
-		url.Scheme = "https"
-		url.Host = reqURL[0:strings.IndexAny(reqURL, "/")]
-		url.Path = reqURL[strings.IndexAny(reqURL, "/"):]
-		switch proto {
-		case "h1":
-			url.Host += ":6001"
-		case "h2":
-			url.Host += ":6002"
-			// req.Proto = "HTTP/2"
-		case "h3":
-			url.Host += ":6003"
-		}
+	var url url.URL
+	url.Scheme = "https"
+	url.Host = reqURL[0:strings.IndexAny(reqURL, "/")]
+	url.Path = reqURL[strings.IndexAny(reqURL, "/"):]
 
-		query := url.Query()
-		for key, val := range params {
-			query.Set(key, val)
-		}
-		url.RawQuery = query.Encode()
-
-		return url
+	switch proto {
+	case "h1":
+		url.Host += ":6001"
+	case "h2":
+		url.Host += ":6002"
+	case "h3":
+		url.Host += ":6003"
 	}
 
-	// var urlParams map[string]string
-	// urlParams = map[string]string{}
-	url := getURL(nil)
-	var reqBody bytes.Buffer
 	switch command {
 	case "E", "e": // echo
-		reqBody = *bytes.NewBufferString(pathOrMsg)
+		reqBody := *bytes.NewBufferString(pathOrMsg)
 		req, err = http.NewRequest(http.MethodPost, url.String(), &reqBody)
 	case "W", "w": // POST
 		req, err = getPostRequest(pathOrMsg, url.String())
 	case "R", "r": // GET
 		req, err = http.NewRequest(http.MethodGet, url.String(), nil)
 	}
-
 	if err != nil {
 		fmt.Printf("http.NewRequest error : %s\n", err.Error())
 		log.Fatalln(err)
+	}
+
+	switch proto {
+	case "h1":
+		req.Proto = "HTTP/1.1"
+		req.ProtoMajor = 1
+		req.ProtoMinor = 1
+	case "h2":
+		req.Proto = "HTTP/2.0"
+		req.ProtoMajor = 2
+		req.ProtoMinor = 0
+	case "h3":
+		req.Proto = "HTTP/3.0"
+		req.ProtoMajor = 3
+		req.ProtoMinor = 0
 	}
 
 	return req
@@ -239,11 +239,11 @@ func handlePostResponse(rsp *http.Response) {
 		bar.Start()
 		proxyReader := bar.NewProxyReader(rsp.Body)
 	*/
-	rspBody, err := ioutil.ReadAll(rsp.Body)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("Write file response : %s", string(rspBody))
+	//rspBody, err := ioutil.ReadAll(rsp.Body)
+	//if err != nil {
+	//		panic(err)
+	//	}
+	// fmt.Printf("Write file response : %s", string(rspBody))
 }
 
 func handleResponse(Method string, rsp *http.Response) {
@@ -264,7 +264,7 @@ func main() {
 	// quiet := flag.Bool("q", false, "don't print the data")
 	echo := flag.String("e", "not set", "echo msg for test")
 	proto := flag.String("p", "h1", "Request Protocol h1(http/1), h2(http/2), h3(http/3)\n")
-	command := flag.String("c", "L", "W/R/D/E\n"+
+	command := flag.String("c", "L", "W/R/E\n"+
 		"W(Write/POST),\n"+
 		"R(Read/GET),\n"+
 		"E(Echo/POST) echo for test\n")
@@ -281,7 +281,7 @@ func main() {
 	}
 	logger.SetLogTimeFormat("")
 
-	if *echo != "not set" && *command == "E" {
+	if *echo != "not set" && (*command == "E" || *command == "e") {
 		*file = *echo
 	}
 
@@ -304,11 +304,17 @@ func main() {
 		fmt.Printf("hclient.Do error : %s\n", err.Error())
 		panic(err)
 	}
-	reqDump, err := httputil.DumpRequest(req, true)
+
+	var reqDump []byte
+	if *command == "w" || *command == "W" {
+		reqDump, err = httputil.DumpRequest(req, false)
+	} else {
+		reqDump, err = httputil.DumpRequest(req, true)
+	}
 	if err != nil {
 		panic(err)
 	}
-	logger.Infof("Request: ")
+	logger.Infof("\nRequest: ")
 	logger.Infof(string(reqDump))
 	logger.Infof("---------------------------------")
 
@@ -328,7 +334,7 @@ func main() {
 	logger.Infof("Got response for %s: \n%s", urls[0], string(rspDump))
 	// logger.Infof("body Response Body: %d bytes", body.Len())
 	// logger.Infof("testBody Response Body: %d bytes", len(testBody))
-	if *command != "E" { // L/R/W/D
+	if *command != "E" && *command != "e" { // L/R/W/D
 		handleResponse(req.Method, rsp)
 	} else { // Echo
 		body := &bytes.Buffer{}
@@ -341,11 +347,11 @@ func main() {
 	elpasedTime := time.Since(start)
 
 	var contentLength int64
-	if *command == "W" {
-		contentLength, _ = strconv.ParseInt(req.Header.Get("Content-Length"), 10, 64)
+	if *command == "W" || *command == "w" {
+		contentLength, _ = strconv.ParseInt(req.Header.Get("File-Size"), 10, 64)
 	} else {
 		contentLength, _ = strconv.ParseInt(rsp.Header.Get("Content-Length"), 10, 64)
 	}
-	logger.Infof("Elapsed Time : %s", elpasedTime)
-	logger.Infof("throughput   : %.2fMiB/s", (float64(contentLength)/(1024*1024))/(elpasedTime.Seconds()))
+	logger.Infof("Elapsed Time : %s\n", elpasedTime)
+	logger.Infof("throughput   : %.2fMiB/s\n", (float64(contentLength)/(1024*1024))/(elpasedTime.Seconds()))
 }

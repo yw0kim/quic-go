@@ -129,30 +129,41 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
+	defer file.Close()
 
-	contentLength, _ := strconv.Atoi(r.Header.Get("Content-Length"))
-	bytesFile, err := ioutil.ReadAll(r.Body)
+	rcvFileSize, _ := strconv.Atoi(r.Header.Get("File-Size"))
 	if err != nil {
 		panic(err)
+	}
+
+	bytesFile, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		fmt.Printf("read Body error: %s\n", err.Error())
 	}
 
 	w.Header().Set("File-Name", fname)
 	nBytes, err := file.Write(bytesFile)
+	var rspStr string
 	if err != nil {
 		panic(err)
-	} else if contentLength != nBytes {
+	} else if rcvFileSize != nBytes {
 		fmt.Println("contentLength != nBytes")
+		fmt.Println("contentLength : ", rcvFileSize)
+		fmt.Println("nBytes : ", nBytes)
 		// fail
 		w.WriteHeader(http.StatusForbidden)
-		rspStr := "Writing " + fname + " is failed."
+		rspStr = "Writing " + fname + " is failed."
 		_, err = w.Write([]byte(rspStr))
-		return
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		w.Header().Set("Written-File-Size", strconv.Itoa(nBytes))
+		w.WriteHeader(http.StatusOK)
+		rspStr = fname + " is written in server."
 	}
 	file.Sync()
 
-	w.Header().Set("Written-File-Size", strconv.Itoa(nBytes))
-	w.WriteHeader(http.StatusOK)
-	rspStr := fname + " is written in server."
 	_, err = w.Write([]byte(rspStr))
 }
 
@@ -176,8 +187,6 @@ func requestLogger(targetMux http.HandlerFunc) http.HandlerFunc {
 func main() {
 	verbose := flag.Bool("v", false, "verbose")
 	bs := flag.String("bind", "quic.yw.com", "bind address")
-	// rootDir := flag.String("dir", "./data", "data root directory")
-	// tcp := flag.Bool("tcp", false, "also listen on TCP")
 	proto := flag.String("p", "h1", "h1(http/1.1), h2(http/2), h3(http/3), a(All protocol work)")
 	flag.Parse()
 
@@ -190,13 +199,6 @@ func main() {
 	}
 	logger.SetLogTimeFormat("")
 
-	// http.Handle("/", http.FileServer(http.Dir(*rootDir)))
-
-	/*
-		if len(bs) == 0 {
-			bs = binds{url + ":6003"}
-		}
-	*/
 	r := mux.NewRouter()
 	r.PathPrefix("/echo").HandlerFunc(requestLogger(echoHandler)).Methods("POST")
 	r.PathPrefix("/data").HandlerFunc(requestLogger(getHandler)).Methods("GET")
@@ -218,47 +220,15 @@ func main() {
 	case "h3":
 		bCap := *bs + ":6003"
 		// tcp
-		err = http3.ListenAndServe(bCap, certFile, keyFile, nil)
-		/* pure http/3
+		// err = http3.ListenAndServe(bCap, certFile, keyFile, nil)
+		// pure http/3
 		server := http3.Server{
 			Server: &http.Server{Addr: bCap},
 		}
 		err = server.ListenAndServeTLS(certFile, keyFile)
-		*/
 	}
 
 	if err != nil {
 		fmt.Println(err)
 	}
-
-	/*
-		var wg sync.WaitGroup
-		wg.Add(len(bs))
-		for _, b := range bs {
-			bCap := b
-			go func() {
-				var err error
-				if *tcp {
-					certFile, keyFile := tlsdata.GetCertificatePaths()
-					// ListenAndServe listens on the given network address for both, TLS and QUIC
-					// connetions in parallel. It returns if one of the two returns an error.
-					// http.DefaultServeMux is used when handler is nil.
-					// The correct Alt-Svc headers for QUIC are set.
-					err = h2quic.ListenAndServe(bCap, certFile, keyFile, nil)
-				} else {
-					server := h2quic.Server{
-						Server: &http.Server{Addr: bCap},
-					}
-					// ListenAndServeTLS listens on the UDP address s.Addr and calls s.Handler to handle HTTP/2 requests on incoming connections.
-					// ListenAndServeTLS -> serveImpl -> quicListenAddr
-					err = server.ListenAndServeTLS(tlsdata.GetCertificatePaths())
-				}
-				if err != nil {
-					fmt.Println(err)
-				}
-				wg.Done()
-			}()
-		}
-		wg.Wait()
-	*/
 }
